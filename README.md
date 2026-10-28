@@ -1,123 +1,95 @@
-# AI Market Intelligence Agent
+# Market Intelligence Agents
 
-Every day a GitHub Actions job collects fresh AI news from RSS feeds, de-duplicates and ranks it, asks Google Gemini for short summaries, and posts the **top 10 updates** to a Telegram group. No server and no laptop needed; everything runs on free tiers.
+Two independent agents in one repository, each run by its own GitHub Actions workflow and posting to its own Telegram group through the same bot. No server needed; everything runs on free tiers.
 
-## Features
+| Agent | Package | Workflow | Schedule (default) | Telegram group |
+|---|---|---|---|---|
+| **AI News Agent** | `src/ai_market_agent/` | `daily-digest.yml` | 12:30 PM IST daily | `TELEGRAM_CHAT_ID` |
+| **Stock Market Agent** | `src/stock_agent/` | `stock-report.yml` | 7:00 AM IST, Mon-Fri | `TELEGRAM_STOCK_CHAT_ID` |
 
-- 10 sources: official blogs (OpenAI, Google DeepMind, Google AI, Hugging Face, NVIDIA, AWS ML) and press (TechCrunch, The Verge, MIT Technology Review, Ars Technica).
-- Covers models, launches, research, open source, startups, funding and industry news (keyword relevance + importance scoring).
-- De-duplication by canonical URL and by near-identical titles; cross-source coverage raises a story's rank.
-- Ranking = importance signals + source trust + recency (24h half-life) + coverage + official-source bonus. Max 3 stories per source for variety.
-- Titles, sources, dates and links come **only from the feeds**. Gemini writes summaries from the feed text and is told not to add facts; it never supplies links or dates. If it skips a story, that story is dropped rather than sent without a summary.
-- Fewer than 10 stories? It sends fewer.
-- Retries with exponential backoff for timeouts, 5xx and rate limits; no retries for permanent errors (bad key, wrong chat, daily quota).
-- Failure message to the Telegram group + non-zero exit code (red run in GitHub); success confirmation message after delivery.
-- Remembers sent URLs for 14 days (Actions cache) so stories are not repeated.
+The stock agent reuses the news agent's retry, error, logging, RSS and Telegram code, but has its own config, state and workflow, so a failure in one never affects the other.
 
-## Architecture and flow
+## AI News Agent
 
-```
-RSS feeds ─► sources.py (fetch, retry, parse, normalise, 36h window)
-          ─► state.py   (drop URLs already sent)
-          ─► ranking.py (relevance filter, dedupe, score, per-source cap, top N)
-          ─► gemini.py  (one JSON request: summaries for the N stories)
-          ─► telegram.py(HTML format, split to <4096 chars, send)
-          ─► success note + save sent URLs   (any failure ─► failure note, exit 1)
-```
+Collects AI news from 10 RSS feeds, de-duplicates and ranks it, asks Gemini for short summaries and posts the top stories. Each story is a **headline**, up to **three short bullets** (what happened, why it matters, what's next) and a **source link**. Titles, links and dates come only from the feeds; Gemini cannot add facts, and stories it skips are dropped. Sent URLs are remembered for 14 days (Actions cache).
 
-Code lives in `src/ai_market_agent/`; tests in `tests/`; workflows in `.github/workflows/`.
+## Stock Market Agent (India)
 
-## Prerequisites
+Posts a concise 7:00 AM IST brief using the previous trading session:
 
-- A GitHub account and a repository for this project.
-- A free Gemini API key: <https://aistudio.google.com/apikey>.
-- A Telegram account.
-- For local runs/tests: Python 3.11+ (CI uses 3.12).
+- **Verified data:** NIFTY 50, SENSEX, BANK NIFTY, sector indices (IT, Auto, Pharma, FMCG, Metal, Energy, Realty) and an optional watchlist. Prices come from Yahoo Finance's public chart endpoint, which is **unofficial and delayed**; every report says so. Anything missing is shown as "data unavailable", never estimated.
+- **Headlines:** relevant market, economy, results and RBI/SEBI news from Economic Times, Moneycontrol, Mint and Business Standard RSS, each with a link.
+- **AI interpretation:** a separate, labelled "unverified" section. Gemini only sees the data above, and any sentence quoting a number not in that data is discarded. No predictions, targets or trade advice. If Gemini is down, the verified report is still sent.
+- **No duplicates:** one report per trading session (`.stock_state/`), so reruns and market holidays do not repeat it.
 
-## Telegram bot and group setup
+Limits: this is not an exchange feed, so there are no live or intraday prices and no official corporate-announcement feed. The price source sits in `market_data.py` and can be swapped for a broker API later.
 
-1. In Telegram, message **@BotFather** → `/newbot` → follow prompts → copy the **bot token** (keep it private).
-2. Create a group (or use an existing one) and **add your bot** as a member.
-3. Send any message in the group (e.g. `hello`).
-4. Find the chat id: open `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` in a browser (replace `<YOUR_TOKEN>`), and look for `"chat":{"id":-100...}`. Group ids are negative; supergroups start with `-100`. If `result` is empty, send another message in the group and reload.
-5. If posting later fails with 403, make the bot a group admin.
+## Setup
 
-## Environment variables
+Requirements: Python 3.11+, a free [Gemini API key](https://aistudio.google.com/apikey), and a Telegram bot.
 
-| Name | Required | Purpose |
+**Telegram:** message **@BotFather** → `/newbot` and copy the token. Create one group per agent and add the bot to both. Send a message in each group, then open `https://api.telegram.org/bot<TOKEN>/getUpdates` and read `"chat":{"id":-100...}`. If posting fails with 403, make the bot an admin.
+
+**Environment variables** (copy `.env.example` to `.env` locally; never commit it):
+
+| Name | Used by | Purpose |
 |---|---|---|
-| `GEMINI_API_KEY` | yes | Gemini API key |
-| `GEMINI_MODEL` | yes | Name of the Gemini model to use. No default: pick one that your key can access in [Google AI Studio](https://aistudio.google.com) and set it yourself (models get renamed and retired, so nothing is hardcoded) |
-| `TELEGRAM_BOT_TOKEN` | yes | Bot token from BotFather |
-| `TELEGRAM_CHAT_ID` | yes | Target group id |
-| `MAX_STORIES` | no | 1-25, default 10 |
-| `LOOKBACK_HOURS` | no | 1-168, default 36 |
+| `GEMINI_API_KEY` | both | Gemini key |
+| `GEMINI_MODEL` | both | Gemini model name (no default; pick one your key can use) |
+| `TELEGRAM_BOT_TOKEN` | both | Bot token |
+| `TELEGRAM_CHAT_ID` | news | News group id |
+| `TELEGRAM_STOCK_CHAT_ID` | stock | Stock group id |
+| `STOCK_WATCHLIST` | stock, optional | NSE symbols, e.g. `RELIANCE,TCS` (max 15; `.NS` added automatically, `.BO` for BSE) |
+| `STOCK_LOOKBACK_HOURS`, `STOCK_MAX_HEADLINES` | stock, optional | News window (default 30h) and headline count (default 8) |
+| `MAX_STORIES`, `LOOKBACK_HOURS` | news, optional | Defaults 10 and 36 |
 
-Only the project-folder `.env` file is loaded locally; real environment variables take precedence over it.
+**GitHub (Settings → Secrets and variables → Actions):**
+- Secrets: `GEMINI_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_STOCK_CHAT_ID`
+- Variables: `GEMINI_MODEL`, and optionally `STOCK_WATCHLIST`
 
-## Local setup
+## GitHub Actions schedules
 
-```bash
-python3 -m venv .venv            # on Debian/Ubuntu: sudo apt install python3-venv (or use virtualenv)
-source .venv/bin/activate
-pip install -r requirements-dev.txt
-cp .env.example .env             # then edit it with your real values (never commit it)
-
-pytest                           # tests use mocks, no credentials needed
-ruff check . && mypy src         # lint + types
-
-PYTHONPATH=src python -m ai_market_agent --dry-run   # real news + real Gemini, prints digest, sends nothing (needs only GEMINI_API_KEY and GEMINI_MODEL)
-PYTHONPATH=src python -m ai_market_agent             # full run, posts to Telegram
-```
-
-Exit codes: `0` ok, `1` run failed, `2` configuration problem.
-
-## GitHub Secrets setup
-
-Repository → **Settings → Secrets and variables → Actions → New repository secret**. Create three secrets with exactly these names: `GEMINI_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`. Never put them in code, workflow files or docs.
-
-The model name is not secret, so set it as a repository **variable** instead: same page → **Variables** tab → **New repository variable** → name `GEMINI_MODEL`, value = your chosen model.
-
-## GitHub Actions setup and manual run
-
-1. Push this project to a GitHub repo (default branch `main`). Scheduled workflows only run from the default branch.
-2. Add the three secrets and the `GEMINI_MODEL` variable (above).
-3. Go to **Actions → Daily AI Digest → Run workflow** to test immediately. Check the Telegram group and the run log.
-4. The `CI` workflow runs lint, types and tests on pushes/PRs and needs no secrets.
-
-Note: GitHub disables scheduled workflows after 60 days without repository activity on public repos; re-enable under the Actions tab, or run it manually.
-
-## Daily scheduling
-
-The schedule is one line in [.github/workflows/daily-digest.yml](.github/workflows/daily-digest.yml):
+Each schedule is one cron line (UTC) in its workflow file:
 
 ```yaml
-- cron: "0 7 * * *"   # minute hour day month weekday, in UTC
+# .github/workflows/daily-digest.yml  - news, 12:30 IST daily
+- cron: "0 7 * * *"
+# .github/workflows/stock-report.yml  - stocks, 07:00 IST Mon-Fri
+- cron: "30 1 * * 1-5"
 ```
 
-Default: **07:00 UTC daily** (12:30 IST, 08:00 CET in winter, 03:00 US Eastern in summer). To change it, edit the minute and hour in UTC, e.g. `"30 2 * * *"` = 02:30 UTC. GitHub may delay scheduled runs by several minutes (more at busy times such as the top of the hour); pick an off-peak minute like `17` if punctuality matters.
+IST = UTC + 5:30. Run either workflow manually from **Actions → Run workflow**. GitHub can delay scheduled runs by several minutes, and disables schedules after 60 days of repository inactivity (re-enable in the Actions tab). The `CI` workflow runs Ruff, mypy and pytest on pushes and PRs.
+
+## Local development and testing
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
+
+pytest -q                 # all tests are mocked; no credentials needed
+ruff check . && mypy src  # lint and strict types
+
+# Dry runs print the message and send nothing (need only GEMINI_API_KEY and GEMINI_MODEL)
+PYTHONPATH=src python -m ai_market_agent --dry-run
+PYTHONPATH=src python -m stock_agent --dry-run
+PYTHONPATH=src python -m stock_agent --force   # resend even if today's report was already sent
+```
+
+Exit codes: `0` ok, `1` run failed (a failure note is sent to that agent's group), `2` configuration problem.
 
 ## Troubleshooting
 
-| Symptom | Cause / fix |
+| Symptom | Fix |
 |---|---|
-| Exit 2, "Missing required configuration" (incl. `GEMINI_MODEL`) | A variable/secret is unset, empty or still a placeholder (`your-...`). Fix your local env file or the GitHub secrets. |
-| `Gemini rejected the API key` | Key invalid/revoked. Create a new one at AI Studio and update `GEMINI_API_KEY`. Not retried. |
-| `Gemini daily free-tier quota exhausted` | Free daily request limit hit. Resets daily; re-run later or point `GEMINI_MODEL` at a different model. The agent uses 1 Gemini request per run, so this usually means the key is shared with other apps. |
-| `Gemini rate limit (429)` | Per-minute limit; retried automatically with backoff, then fails if it persists. |
-| `Gemini model '...' not found` | Your `GEMINI_MODEL` value is wrong or retired. Set it to a model listed in AI Studio. |
-| Telegram `HTTP 403` | Bot not in the group or was removed. Re-add it (make it admin if needed). |
-| Telegram `HTTP 400 ... chat not found` | Wrong `TELEGRAM_CHAT_ID`. Re-check via `getUpdates`; a group upgraded to a supergroup gets a new `-100...` id. |
-| Telegram `HTTP 401/404` | Bad `TELEGRAM_BOT_TOKEN`. |
-| "All news feeds failed" | Network/DNS problem or every feed URL changed. Individual feed failures are only warnings. |
-| "no new relevant AI stories" message | Nothing new in the window (or all already sent). Normal on very quiet days. |
-| Same story repeated | The sent-history cache was evicted (7 days unused) or cleared; harmless. |
+| Exit 2, "Missing required configuration" | A secret or variable is unset or still a placeholder. |
+| `Gemini rejected the API key` | Create a new key and update `GEMINI_API_KEY`. |
+| `Gemini daily free-tier quota exhausted` | Resets daily. The stock report still sends its verified data without AI text. |
+| `Gemini model '...' not found` | Set `GEMINI_MODEL` to a model listed in AI Studio. |
+| Telegram `403` / `400 chat not found` | Bot not in the group, or wrong chat id (supergroup ids start with `-100`). |
+| "data unavailable" in the stock report | Yahoo rate-limited or changed its endpoint; the report says so rather than guessing. |
+| No stock report on a market holiday | Expected: there was no new session, so nothing new to report. |
+| Stock report repeated | The `stock-state-` Actions cache was evicted; harmless. |
 
-On failure the group receives a message with the failing stage and reason (never secrets); full diagnostics are in the Actions log.
+## Costs
 
-## Costs and free-tier limits
-
-- GitHub Actions: free for public repos; private repos get a monthly free-minute quota (a run takes about a minute).
-- Gemini API: free tier, with rate and daily request limits that Google can change. One run makes one request (a few thousand tokens). On the free tier Google may use submitted content to improve its products; see their terms.
-- Telegram Bot API: free.
-- RSS feeds: free; some outlets rate-limit or block cloud IPs, and feeds can change URL. The agent skips failing feeds.
+GitHub Actions is free for public repos (private repos have a monthly quota; each run takes about a minute). Gemini uses its free tier at one request per run per agent. Telegram, RSS and the Yahoo endpoint are free, but the price endpoint is unofficial and carries no uptime or licensing guarantee.

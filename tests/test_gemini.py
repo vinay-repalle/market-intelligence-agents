@@ -23,7 +23,7 @@ def run(n: int = 2) -> list:  # type: ignore[type-arg]
 
 def test_parse_handles_fences_and_filters_bad_rows() -> None:
     text = '```json\n[{"id":1,"summary":" A  b "},{"id":9,"summary":"x"},{"id":2,"summary":""},"junk"]\n```'
-    assert gemini.parse_summaries(text, {1, 2}) == {1: "A b"}
+    assert gemini.parse_summaries(text, {1, 2}) == {1: ["A b"]}
 
 
 @pytest.mark.parametrize("text", ["not json", '{"id":1}', "[]", '[{"id":5,"summary":"x"}]'])
@@ -32,9 +32,22 @@ def test_parse_rejects_unusable(text: str) -> None:
         gemini.parse_summaries(text, {1})
 
 
-def test_parse_truncates_long_summary() -> None:
+def test_parse_truncates_long_bullet() -> None:
     out = gemini.parse_summaries(json.dumps([{"id": 1, "summary": "w " * 500}]), {1})
-    assert len(out[1]) <= gemini.MAX_SUMMARY_CHARS
+    assert len(out[1][0]) <= gemini.MAX_BULLET_CHARS
+
+
+def test_parse_caps_bullets_at_three_and_drops_junk() -> None:
+    row = {"id": 1, "bullets": ["a", "", 5, "b", "c", "d"]}
+    assert gemini.parse_summaries(json.dumps([row]), {1}) == {1: ["a", "b", "c"]}
+
+
+def test_summarize_joins_bullets_one_per_line() -> None:
+    stories = [make_story("S")]
+    with responses.RequestsMock() as rsps:
+        rsps.add(responses.POST, URL, json=ok_body([{"id": 1, "bullets": ["x", "y"]}]))
+        out = gemini.summarize(stories, api_key="k" * 10, model="m")
+    assert out[0].summary == "x\ny"
 
 
 def test_prompt_contains_items_and_rules() -> None:

@@ -57,3 +57,19 @@ def test_claude_settings_deny_env_files() -> None:
 def test_requirements_are_pinned() -> None:
     for line in (ROOT / "requirements.txt").read_text().split():
         assert "==" in line
+
+
+STOCK_WF = (ROOT / ".github/workflows/stock-report.yml").read_text()
+
+
+def test_stock_workflow_is_independent_and_runs_0700_ist_weekdays() -> None:
+    assert '- cron: "30 1 * * 1-5"' in STOCK_WF  # 01:30 UTC = 07:00 IST
+    assert "workflow_dispatch:" in STOCK_WF
+    assert "group: stock-report" in STOCK_WF and "group: daily-digest" not in STOCK_WF
+    assert "TELEGRAM_STOCK_CHAT_ID: ${{ secrets.TELEGRAM_STOCK_CHAT_ID }}" in STOCK_WF
+    assert "TELEGRAM_CHAT_ID: ${{" not in STOCK_WF
+    assert "stock-state-" in STOCK_WF and "sent-state-" not in STOCK_WF
+
+
+def test_news_schedule_unchanged() -> None:
+    assert '- cron: "0 7 * * *"' in WF  # 12:30 IST
