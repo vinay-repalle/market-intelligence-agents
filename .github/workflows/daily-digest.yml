@@ -1,0 +1,55 @@
+name: Daily AI Digest
+
+on:
+  schedule:
+    # Minute Hour Day Month Weekday, in UTC. 07:00 UTC daily.
+    # To change the time, edit this single line (see README "Daily scheduling").
+    - cron: "0 7 * * *"
+  workflow_dispatch: # manual run from the Actions tab, for testing and recovery
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-digest
+  cancel-in-progress: false
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Remembers which URLs were already sent so stories are not repeated.
+      - name: Restore sent-history cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .agent_state
+          key: sent-state-none
+          restore-keys: sent-state-
+
+      - name: Run digest
+        env:
+          PYTHONPATH: src
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python -m ai_market_agent
+
+      - name: Save sent-history cache
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: .agent_state
+          key: sent-state-${{ github.run_id }}
