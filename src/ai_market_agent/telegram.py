@@ -26,14 +26,17 @@ def _trim(text: str, n: int) -> str:
 
 
 def format_story(index: int, story: Story) -> str:
+    """Headline, up to three short bullets, then the source link."""
     title = html.escape(_trim(story.title, 200))
     url = html.escape(story.url, quote=True)
-    meta = html.escape(story.source)
+    lines = [f"<b>{index}. {title}</b>"]
+    for bullet in story.summary.splitlines()[:3]:
+        if bullet.strip():
+            lines.append(f"• {html.escape(_trim(bullet.strip(), 200))}")
+    source = html.escape(story.source)
     if story.published:
-        meta += f" · {story.published:%d %b %Y}"
-    lines = [f'<b>{index}. <a href="{url}">{title}</a></b>', f"<i>{meta}</i>"]
-    if story.summary:
-        lines.append(html.escape(_trim(story.summary, 600)))
+        source += f" · {story.published:%d %b}"
+    lines.append(f'🔗 <a href="{url}">{source}</a>')
     return "\n".join(lines)
 
 

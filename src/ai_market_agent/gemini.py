@@ -17,18 +17,22 @@ log = logging.getLogger(__name__)
 
 ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 TIMEOUT = (5, 90)
-MAX_SUMMARY_CHARS = 450
+MAX_BULLETS = 3
+MAX_BULLET_CHARS = 160
 
 PROMPT = """You are an analyst writing a daily AI industry briefing.
 Below are numbered news items, each with a title, source and excerpt.
-For EACH item write a concise summary of 1-2 sentences (max 45 words) explaining what happened
-and why it matters to people following AI.
+For EACH item write at most three very short bullets (max 20 words each):
+  1. what happened
+  2. why it matters
+  3. potential impact or what is next (omit if the text does not support it)
 
 Strict rules:
 - Use ONLY facts present in the title and excerpt. Do not add numbers, names, dates or quotes
-  that are not in the text. If the excerpt is thin, summarise only what the title supports.
-- Plain text only. No markdown, no links, no emojis.
-- Respond with a JSON array only: [{{"id": <number>, "summary": "<text>"}}, ...]
+  that are not in the text. If the excerpt is thin, give fewer bullets rather than guessing.
+- No jargon, no repetition of the title, no filler.
+- Plain text only. No markdown, no bullet symbols, no links, no emojis.
+- Respond with a JSON array only: [{{"id": <number>, "bullets": ["<text>", ...]}}, ...]
 - Include every id exactly once.
 
 Items:
@@ -46,24 +50,42 @@ def build_prompt(stories: list[Story]) -> str:
     return PROMPT.format(items="\n\n".join(blocks))
 
 
-def parse_summaries(text: str, valid_ids: set[int]) -> dict[int, str]:
-    """Parse Gemini's JSON output, keeping only well-formed summaries for known ids."""
+def _clean_bullets(row: dict[str, Any]) -> list[str]:
+    raw = row.get("bullets")
+    if raw is None and isinstance(row.get("summary"), str):
+        raw = [row["summary"]]  # tolerate a single-string answer
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        clean = " ".join(item.split())
+        if not clean:
+            continue
+        if len(clean) > MAX_BULLET_CHARS:
+            clean = clean[: MAX_BULLET_CHARS - 1].rstrip() + "…"
+        out.append(clean)
+    return out[:MAX_BULLETS]
+
+
+def parse_summaries(text: str, valid_ids: set[int]) -> dict[int, list[str]]:
+    """Parse Gemini's JSON output, keeping only well-formed bullets for known ids."""
     try:
         data = json.loads(_FENCE.sub("", text.strip()))
     except json.JSONDecodeError:
         raise TransientError("Gemini returned malformed JSON") from None
     if not isinstance(data, list):
         raise TransientError("Gemini JSON was not a list")
-    out: dict[int, str] = {}
+    out: dict[int, list[str]] = {}
     for row in data:
         if not isinstance(row, dict):
             continue
-        sid, summary = row.get("id"), row.get("summary")
-        if isinstance(sid, int) and sid in valid_ids and isinstance(summary, str) and summary.strip():
-            clean = " ".join(summary.split())
-            if len(clean) > MAX_SUMMARY_CHARS:
-                clean = clean[: MAX_SUMMARY_CHARS - 1].rstrip() + "…"
-            out.setdefault(sid, clean)
+        sid = row.get("id")
+        if isinstance(sid, int) and sid in valid_ids:
+            bullets = _clean_bullets(row)
+            if bullets:
+                out.setdefault(sid, bullets)
     if not out:
         raise TransientError("Gemini response contained no usable summaries")
     return out
@@ -129,7 +151,7 @@ def summarize(
         "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
     }
 
-    def attempt() -> dict[int, str]:
+    def attempt() -> dict[int, list[str]]:
         try:
             resp = session.post(
                 ENDPOINT.format(model=model),
@@ -159,7 +181,7 @@ def summarize(
     result = []
     for i, story in enumerate(stories, 1):
         if i in summaries:
-            story.summary = summaries[i]
+            story.summary = "\n".join(summaries[i])
             result.append(story)
         else:
             log.warning("Gemini gave no summary for %r; omitting it", story.title)

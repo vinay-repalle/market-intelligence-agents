@@ -17,9 +17,14 @@ def client() -> telegram.TelegramClient:
 def test_format_story_escapes_html_and_links() -> None:
     s = make_story("A <b>&</b> B", url="https://x.test/a?x=1&y=2", summary="Uses <script> & more")
     text = telegram.format_story(1, s)
-    assert '<a href="https://x.test/a?x=1&amp;y=2">A &lt;b&gt;&amp;&lt;/b&gt; B</a>' in text
-    assert "&lt;script&gt;" in text and "<script>" not in text
-    assert "Example · 28 Oct 2026" in text
+    assert "<b>1. A &lt;b&gt;&amp;&lt;/b&gt; B</b>" in text
+    assert '<a href="https://x.test/a?x=1&amp;y=2">Example · 28 Oct</a>' in text
+    assert "• Uses &lt;script&gt; &amp; more" in text and "<script>" not in text
+
+
+def test_format_story_shows_at_most_three_bullets() -> None:
+    text = telegram.format_story(1, make_story(summary="a\nb\nc\nd"))
+    assert text.count("•") == 3
 
 
 def test_format_story_without_date() -> None:

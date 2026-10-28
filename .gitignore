@@ -25,4 +25,5 @@ htmlcov/
 
 # Generated local state
 .agent_state/
+.stock_state/
 *.log
